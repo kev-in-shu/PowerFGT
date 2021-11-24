@@ -149,6 +149,9 @@ function Invoke-FGTRestMethod {
             $fullurl += "&filter=$filter"
         }
 
+        # KS Write-Warning $fullurl
+        # KS $invokeParams | Out-Host
+
         try {
             if ($body) {
 

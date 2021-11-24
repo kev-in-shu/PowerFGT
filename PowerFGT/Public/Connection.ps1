@@ -67,6 +67,8 @@ function Connect-FGT {
         [Parameter(Mandatory = $true, position = 1)]
         [String]$Server,
         [Parameter(Mandatory = $false)]
+        [string]$ApiToken,
+        [Parameter(Mandatory = $false)]
         [String]$Username,
         [Parameter(Mandatory = $false)]
         [SecureString]$Password,
@@ -93,16 +95,6 @@ function Connect-FGT {
 
         $connection = @{server = ""; session = ""; httpOnly = $false; port = ""; headers = ""; invokeParams = ""; vdom = ""; version = "" }
 
-        #If there is a password (and a user), create a credentials
-        if ($Password) {
-            $Credentials = New-Object System.Management.Automation.PSCredential($Username, $Password)
-        }
-        #Not Credentials (and no password)
-        if ($null -eq $Credentials) {
-            $Credentials = Get-Credential -Message 'Please enter administrative credentials for your FortiGate'
-        }
-
-        $postParams = @{username = $Credentials.username; secretkey = $Credentials.GetNetworkCredential().Password; ajax = 1 }
         $invokeParams = @{DisableKeepAlive = $false; UseBasicParsing = $true; SkipCertificateCheck = $SkipCertificateCheck; TimeoutSec = $Timeout }
 
         if ("Desktop" -eq $PSVersionTable.PsEdition) {
@@ -142,35 +134,57 @@ function Connect-FGT {
         }
 
         $uri = $url + "logincheck"
-        try {
-            Invoke-WebRequest $uri -Method POST -Body $postParams -SessionVariable FGT @invokeParams | Out-Null
-        }
-        catch {
-            Show-FGTException $_
-            throw "Unable to connect to FortiGate"
-        }
-
-        #Search crsf cookie and to X-CSRFTOKEN
-        $cookies = $FGT.Cookies.GetCookies($uri)
-        foreach ($cookie in $cookies) {
-            if ($cookie.name -eq "ccsrftoken") {
-                $cookie_csrf = $cookie.value
+        $headers = @{}
+        if ($ApiToken) {
+            try {
+                $apiLoginHeaders = @{ "Authorization" = "Bearer $ApiToken" }
+                Invoke-WebRequest $uri -Method GET -Headers $loginHeaders -SessionVariable FGT @invokeParams | Out-Null
             }
+            catch {
+                Show-FGTException $_
+                throw "Unable to connect to FortiGate"
+            }
+            $headers.Authorization = $apiLoginHeaders.Authorization
         }
+        else {
+            #If there is a password (and a user), create a credentials
+            if ($Password) {
+                $Credentials = New-Object System.Management.Automation.PSCredential($Username, $Password)
+            }
+            #Not Credentials (and no password)
+            if ($null -eq $Credentials) {
+                $Credentials = Get-Credential -Message 'Please enter administrative credentials for your FortiGate'
+            }
+            $postParams = @{username = $Credentials.username; secretkey = $Credentials.GetNetworkCredential().Password; ajax = 1 }
+            try {
+                Invoke-WebRequest $uri -Method POST -Body $postParams -SessionVariable FGT @invokeParams | Out-Null
+            }
+            catch {
+                Show-FGTException $_
+                throw "Unable to connect to FortiGate"
+            }
+            #Search crsf cookie and to X-CSRFTOKEN
+            $cookies = $FGT.Cookies.GetCookies($uri)
+            foreach ($cookie in $cookies) {
+                if ($cookie.name -eq "ccsrftoken") {
+                    $cookie_csrf = $cookie.value
+                }
+            }
 
-        # throw if don't found csrf cookie...
-        if ($null -eq $cookie_csrf) {
-            throw "Unable to found CSRF Cookie"
+            # throw if don't found csrf cookie...
+            if ($null -eq $cookie_csrf) {
+                throw "Unable to found CSRF Cookie"
+            }
+
+            # #Remove extra "quote"
+            $cookie_csrf = $cookie_csrf -replace '["]', ''
+            #Add csrf cookie to header (X-CSRFTOKEN)
+            $headers["X-CSRFTOKEN"] = $cookie_csrf
         }
-
-        #Remove extra "quote"
-        $cookie_csrf = $cookie_csrf -replace '["]', ''
-        #Add csrf cookie to header (X-CSRFTOKEN)
-        $headers = @{"X-CSRFTOKEN" = $cookie_csrf }
 
         $uri = $url + "api/v2/monitor/system/firmware"
         try {
-            $version = Invoke-RestMethod $uri -Method "get" -WebSession $FGT @invokeParams
+            $version = Invoke-RestMethod $uri -Header $headers -Method "get" -WebSession $FGT @invokeParams
         }
         catch {
             throw "Unable to found FGT version"
